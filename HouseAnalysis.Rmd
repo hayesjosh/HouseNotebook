@@ -1,16 +1,11 @@
 ---
 title: "House Analysis"
-output: html_notebook
+output: github_document
 ---
 
 
-
-```{r}
-plot(cars)
+First we start with Freddie Mac's "Single Family Loan-Level Dataset". That contains a staggering 25.7 million fixed-rate mortgages between January 1, 1999 and March 31, 2017. For exploratory analyses, I'm using a random sample drawn from each year such that we have a total of 895,293 cases. 
+```{r, results = 'asis'}
+yeartab
 ```
 
-Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
-
-When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
-
-The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
