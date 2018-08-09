@@ -1,0 +1,19 @@
+---
+title: 'Project Overview: Housing Market Comparisons'
+author: "Joshua Hayes"
+date: "August 9, 2018"
+output: html_document
+---
+
+
+##Concept
+
+After chatting with some friends who are looking at different cities to buy a home and also while reading about the deliberations on Amazon's HQ2 with its 20 prospective host cities, I thought it would be helpful to be able to compare the housing markets of different regions. It is fairly easy online to compare the relative cost of housing, and the absolute number of housing on the market. But I wanted to create some additional tools to get at more complex aspects of the housing markets across different regions. 
+
+So, I plan to continue developing an interactive Shiny app that will help users assess, compare, and track the competitiveness of housing markets across place and time. 
+
+**You can access the current version of the app here:**
+ https://hayesjosh.shinyapps.io/HouseShiny/ 
+
+
+

@@ -1,0 +1,299 @@
+---
+title: 'Project Overview: Housing Market Comparisons'
+output:
+  md_document: html_notebook
+---
+
+##Concept
+
+After chatting with some friends who are looking at different cities to buy a home and also while reading about the deliberations on Amazon's HQ2 with its 20 prospective host cities, I thought it would be helpful to be able to compare the housing markets of different regions. It is fairly easy online to compare the relative cost of housing, and the absolute number of housing on the market. But I wanted to create some additional tools to get at more complex aspects of the housing markets across different regions. 
+
+So, I plan to continue developing an interactive Shiny app that will help users assess, compare, and track the competitiveness of housing markets across place and time. 
+
+**You can access the current version of the app here:**
+ https://hayesjosh.shinyapps.io/HouseShiny/ 
+
+
+
+
+
+##Phase 1: Finding a Primary Dataset
+
+I looked around for available, free-use data and found that Freddie Mac has released data on 25.7 million housing loans they have given between 1991 and 2017. (http://www.freddiemac.com/research/datasets/sf_loanlevel_dataset.html) We don't need all that for our initial analysis (though we will use it all later to build our predictive models), so I pulled just a sampling of approximately ~895k cases. 
+
+I poked through the dataset and, while it is has an impressive range of measurements, there are only a few variables that I find the most helpful. Namely, the date the loan was originiated, the borrowers FICO score (credit score), and a flag for whether the borrow was a "First Time Home Buyer" (FTHB):
+
+```{r}
+###RScript for "Housing Health" Project
+
+###DATA SOURCE ONE
+#set working directory
+#Below is for one computer
+#setwd("D:Dropbox/Work/DS/DI_Chall/HouseProject")
+#Below is for another computer
+#setwd("Dropbox/Data Science/DI_Chall/HouseProject")
+
+#load some pacakges
+library("readr")
+library("rvest")
+library("tidyverse")
+library("ggplot2")
+library("data.table")
+library("dplyr")
+library("lubridate")
+library("stringi")
+library("ggmap")
+library("fiftystater")
+library("lattice")
+library("knitr")
+library("rsconnect")
+
+################################
+###      Inputting mortgage data
+################################
+#setting the wd to input the mortgage files
+file.list <- list.files(path = "data/mortgagedata/all", pattern = '*.txt')
+
+#making a function to input the mortgage files
+mortgage.input <- function(doc) {
+  docext <- paste("data/mortgagedata/all/", doc, sep = "")
+  harp_origfile <- read.table(file = docext, sep="|", header=FALSE, colClasses=origclass )
+  names(harp_origfile)=c('fico','dt_first_pi','flag_fthb','dt_matr','cd_msa',"mi_pct",'cnt_units','occpy_sts','cltv','dt i','orig_upb','ltv','int_rt','channel','ppmt_pnlty','prod_type','st', 'prop_type','zipcode','id_loan','loan_purpose', 'orig_loan_term','cnt_borr','seller_name') 
+  doc <- harp_origfile
+  doc <- subset(doc, select =(c("fico", "dt_first_pi", "flag_fthb", "st", "zipcode", "id_loan")))
+}
+#defining origclass
+origclass <- c('integer','integer','character', 'integer', 'character', 'real', 'integer',  'character','real','integer','integer','integer','real','character','character','character','character', 'character','character','character','character', 'integer', 'integer','character','character','character') 
+
+
+###       Inputting all the data into a list of dataframes
+lst <- lapply(file.list, mortgage.input)
+#binding all those dataframes together into a single dataframe
+dmort = as.data.frame(data.table::rbindlist(lst))
+
+#Let's take a look
+head(dmort)
+
+```
+
+Of course, it is likely that many of these variables are messy. A quick inspection reveals a number of issues that need to be addressed:
+
+1. FICO scores that are missing are input as 9999. That will really throw off our calculations!
+2. The First Time Home Buyers flag reports 9 for a range of circumstances (described in greater detail in the release notes). Just as an example, buying a second home as a "holiday home" would be coded as 9. After a thorough reading of the release notes, I've decided that it is most helpful, and conservative, to code these cases as FALSE for the FTHB flag. 
+3. Date of loan needs to be changed from a 6-digit number to a usable time format that differentiates "year" and "month." 
+4. State includes a number of U.S. territories. That's not bad in and of itself, but the quality/quantity of loan-data for Guam, the Virgin Islands, Puerto Rico, and D.C. are radically different than the 50 states. For the sake of simplicity, and the integrity of our modeling, we will set these cases aside for the time being. 
+
+
+So let's clean all that up, and then take a look at what we've got: 
+
+```{r}
+#transforming the date information
+dmort$date <- as.character(dmort$dt_first_pi)
+stri_sub(dmort$date, 5, 4) <- "-"
+dmort$date <- paste(dmort$date, "-01", sep="")
+dmort$date <- strptime(dmort$date, "%Y-%m-%d")
+dmort$date <- as.POSIXct(dmort$date, "%Y-%m-%d", tz="US/Pacific")
+dmort$year <- year(dmort$date)
+dmort$month <- month(dmort$date)
+
+#making state a factor
+dmort$st <- as.factor(dmort$st)
+
+#cleaning
+#cleaning First-Time-Buyers FTB
+dmort$flag_fthb[dmort$flag_fthb == "9"] <- 0
+dmort$flag_fthb[dmort$flag_fthb == "Y"] <- 1
+dmort$flag_fthb[dmort$flag_fthb == "N"] <- 0
+
+#changing the credit scores that are recorded as 9999
+dmort$fico[dmort$fico == 9999] <- NA
+
+   #removing 7 odd cases recorded as being in 2018, although the data providers say the data is not that recent
+dmort<-dmort[!(dmort$year==2018),]
+#also removing values for Puerto Rico, Guam, and the Virgin Islands because they dont have as quality of data as the other regions
+dmort<-dmort[!(dmort$st=="PR" | dmort$st=="GU" | dmort$st=="VI"),]
+
+sapply(dmort, function(x) sum(is.na(x)))
+dmort <- na.omit(dmort)
+dmort <- subset(dmort, select =(c("fico", "flag_fthb", "st", "zipcode", "date", "year", "month")))
+
+head(dmort)
+```
+
+
+There, that look's nicer. Now let's specify the variables we're going to use.
+
+We are going to measure FTHB "friendliness"" as the ratio of first-time-home-buyers over all housing loans given in a specific time/place. So let's create that by state and by year (we'll do by month and county later):
+```{r}
+fthb.year <- dmort %>% 
+  group_by(st, year) %>% 
+  summarize(fthbN=n(),fthbPerc= sum(flag_fthb=="1")/n()*100)
+head(fthb.year)
+```
+
+Now let's take a look at how FTHB friendliness comapres across states by year at first.
+
+```{r warning=FALSE}
+#creating plot for Percentage of First Time Home Buyers
+multiplot2 = filter(fthb.year, st=="CA" | st=="MA" | st=="TX"|st=="WA"|st=="CO"|st=="NC") %>%
+  ggplot(aes(x = year, y = fthbPerc, color = st)) +
+  ggtitle("Percentage of Home Buyers that are 'First Time' Buyers")+
+  theme(plot.title = element_text(hjust = 0.5))+
+  geom_line(size=1) +
+  labs(color = "State", y = "Percentage", x = "Year")  
+multiplot2                              
+#ggsave("fthbPerc.jpg", width = 5, height = 5)
+```
+
+Already we can see a lot of variation--both across states and over time! Just tracking the change in FTHB friendliness would help us get a better idea about the housing markets across regions. Showing all 50 states would be too much information to read clearly. So for the interactive app, it would be useful to have it so you can select only the regions that interest you to plot.  
+ 
+ 
+Let's use another dimension to gain greater perspective. The Freddie Mac data also includes information on FICO scores by county and by month, so we can use that information to get at changes in "loan-competitiveness" across states and years. We've already cleaned that variable, so we know we're good to go. Let's see what the loan-competitiveness looks like for the states I selected above: 
+```{r}
+#creating the data frame of fico by state and year
+fico.year  <- dmort %>%
+  group_by(st, year) %>%
+  summarise (ficoN =n(), ficoAvg = mean(fico))
+
+#creating plot for Average FICO Score
+multiplot1 = filter(fico.year, st=="CA" | st=="MA" | st=="TX"|st=="WA"|st=="CO"|st=="NC") %>%
+  ggplot(aes(x = year, y = ficoAvg, color = st)) +
+  ggtitle("Average FICO Score for Home Buyers") +
+  theme(plot.title = element_text(hjust = 0.5))+
+  geom_line(size=1)+
+  labs(color = "State", y = "Mean FICO", x = "Year")  
+multiplot1
+
+```
+By looking at both those graphs we can see that Texas is looking pretty good! It is relatively easy for individuals to get housing loans and first time buyers fair pretty well in the overall housing market. That could be very helpful information!
+
+##Phase 2: Amending Analysis with Additional Datasets
+Knowing the two above aspects of housing markets is interesting. But I also want to know about the comparitive cost of housing. So let's look at a relative value across regions that we will define as:
+
+*HOUSING COST RATIO = Median-Cost-of-Active-House-Listings / Median-Yearly-Income*
+
+In order to make this variable, we will first need to web-scrape median income data on all 50 states:
+```{r}
+
+################################
+###     Alternative data sources below
+################################
+
+#creating median income data
+#scrape data for median income by state, omit DC and Puerto Rico,
+#convert state names to abbreviations
+url <- read_html("https://en.wikipedia.org/wiki/List_of_U.S._states_by_income")
+wagetable <- url %>%
+  html_node(xpath = '//*[@id="mw-content-text"]/div/table[3]') %>%
+  html_table()
+wagetable <- na.omit(wagetable)
+wagetable$state <- state.abb[match(wagetable$State, state.name)]
+
+#of course two entries are in different notation online than the others, so their values don't flow through...
+wagetable[27, 4] <- as.character("$52,504")
+wagetable[15, 4] <- as.character("$58,878")
+
+#remove $ from median income
+for (i in c(3:7)) {
+  wagetable[[i]] <- substr(wagetable[[i]], 2, length(wagetable[[i]]))
+}
+
+#remove punctuation from median income and convert char to num
+for (i in 1:length(wagetable)) {
+  wagetable[[i]] <- gsub('[[:punct:]]','',wagetable[[i]])
+}
+for (i in c(3:7)) {
+  wagetable[[i]] <- as.numeric(wagetable[[i]])
+}
+wagetable <- subset(wagetable, select=c(2,3,4,5,6,7,8))
+names(wagetable) <- c("state", "2015", "2014", "2013", "2012", "2011", "st")
+                    
+#shifting from wide to long
+wagelong <- gather(wagetable, key = year, value = medIncome, "2011", "2012", "2013", "2014", "2015")
+
+head(wagelong)
+
+
+```
+
+Now we want to merge that with data on house listings. Luckily, Realtor.com has some available at: https://www.realtor.com/research/data/ 
+Let's grab and process that data. 
+```{r}
+######################################
+###     Curating Realtor.com's housing market data
+######################################
+d <- read.csv("data/housingdata/RDC_InventoryCoreMetrics_County_Hist.csv", strip.white = TRUE)
+d <- subset(d, select = c(Month, CountyName, Median.Listing.Price, Active.Listing.Count, Days.on.Market, New.Listing.Count, Price.Increase.Count, Price.Decrease.Count, Avg.Listing.Price, Total.Listing.Count))
+#dropping a noisy row
+d = d[-74001,]
+#splitting apart county/state info into two columns and keeping only city
+d$loc <- data.frame(do.call('rbind', strsplit(as.character(d$CountyName),', ',fixed=TRUE)))
+d$city <- d$loc[,1]
+d$st <- d$loc[,2]
+d <- subset(d, select = c(Month, Median.Listing.Price, Active.Listing.Count, Days.on.Market, New.Listing.Count, Price.Increase.Count, Price.Decrease.Count, Avg.Listing.Price, Total.Listing.Count, city, st))
+names(d) <- c("date", "medPrice", "activeCount", "daysMarket", "newCount", "increaseCount", "decreaseCount", "avgPrice", "totalCount", "city", "st") 
+d$date <- as.POSIXct(d$date, format = "%Y-%m-%d %H:%M:%S")
+d$month <- month(d$date)
+d$year <- year(d$date)
+d$st <- trimws(d$st, which = c("left"))
+
+head(d)
+```
+
+There's a lot in there we can play with later. For now, let's just merge the Realtor.com data with the median income data from Wikipedia and we'll make our new variable. Finally, let's visualize how our new ratio actually looks around the U.S.:
+```{r}
+ 
+##    merging tables
+
+#lets put some of those datasets together
+#need to prep these sets to merge
+#get rid of NA
+sapply(d, function(x) sum(is.na(x)))
+sapply(wagetable, function(x) sum(is.na(x)))
+
+  #for merging I am keeping only the years that have median income data as well
+  d2 <- filter(d, year > 2011 & year < 2016)
+  d3 <- d2 %>%
+    group_by(st, year) %>%
+    summarise(medPriceY = median(medPrice))
+
+  d3$st <- as.character(d3$st)
+  wagelong$st <- as.character(wagelong$st)
+  wagelong$year <- as.numeric(wagelong$year)
+  wagelong$state <- tolower(wagelong$state)
+  
+  d3$year <- as.character(d3$year)
+  wagelong$year <- as.character(wagelong$year)
+  
+  #merging together one year to put onto a map
+  d4 <- left_join(d3, wagelong, by = c("st", "year"))
+  
+  #creating my new variable
+  d4 = d4 %>% mutate(m2mRatio = medPriceY / medIncome)
+  d4 <- na.omit(d4)
+  d4 <- as.data.frame(d4)
+  d4$year <- as.numeric(d4$year)
+  
+  
+#creating the map plot
+states_map <- map_data("state")  
+
+p <- ggplot(d4, aes(map_id = state))+
+  geom_map(aes(fill = m2mRatio), color="black", map = fifty_states)+
+  expand_limits(x = fifty_states$long, y = fifty_states$lat)+
+  facet_wrap(~year)+
+  scale_fill_gradient(low="purple", high="dark blue")+
+  theme(plot.title = element_text(hjust = 0.5))+
+  ggtitle("Years of Median-Pay to buy Median-Value House")+
+  scale_x_continuous(breaks = NULL) + scale_y_continuous(breaks = NULL) +
+  labs(x = "", y = "") + theme(legend.position = "bottom", 
+                               panel.background = element_blank())
+p
+```
+
+##Ready to roll!
+Now that are our datasets are loaded in, and we have some initial visualizations we can start the fun part: Asking questions of the data, Analyzing, and Predicting.
+
+I'll be greating a second notebook to show some of my initial findings, prediction models, and model evaluation procedures. In the meantime, check out my Shiny App and play with the data yourself!
+
+https://hayesjosh.shinyapps.io/HouseShiny/
